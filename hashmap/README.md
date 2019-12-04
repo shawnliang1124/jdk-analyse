@@ -291,12 +291,274 @@ loHead, loTail ,hiHead , hiTail，这四个变量从字面意思可以看出应�
 想要了解HashMap底层的红黑树逻辑，我们首先要掌握红黑树相关的概念，这里我已经列举出来了。。  
 
 
+***  
+
+红黑树概念理解的相关文章**强烈推荐新人入门**：
+https://www.jianshu.com/p/b7dda385f83d
 
 
+***  
+
+在贴代码之前，我讲一下红黑树基本概念理解，并且画了一些图来描述：  
+![image](https://wx1.sinaimg.cn/mw1024/007R8l8Fly1g9ggy00xrbj30vd0tjwfo.jpg)  
+
+
+![image](https://wx1.sinaimg.cn/mw1024/007R8l8Fly1g9ggy02hvfj30u00x5jtw.jpg) 
+
+
+![image](https://wx4.sinaimg.cn/mw1024/007R8l8Fly1g9ggy01llvj30nx0twq4h.jpg)  
+
+
+
+![image](https://wx3.sinaimg.cn/mw1024/007R8l8Fly1g9ggy01z52j30sz0tf76j.jpg)
 
 
 ***
+下面就是链表转红黑树的代码了，相当地难啃  
+- treeifyBin的逻辑  
+``` 
+  /**
+     * Replaces all linked nodes in bin at index for given hash unless
+     * table is too small, in which case resizes instead.
+     */
+    final void treeifyBin(Node<K,V>[] tab, int hash) {
+        int n, index; Node<K,V> e;  //初始化一些变量
+        if (tab == null || (n = tab.length) < MIN_TREEIFY_CAPACITY) //数组为空或者map的内容<64
+            resize();   //先扩容
+        else if ((e = tab[index = (n - 1) & hash]) != null) {
+            TreeNode<K,V> hd = null, tl = null; //红黑树转换逻辑，hd代表头，tl代表尾
+            do {
+                TreeNode<K,V> p = replacementTreeNode(e, null); //创建一个新的TreeNode节点,e.hash,e.key,e.value,next=null
+                if (tl == null) //尾巴节点为空，证明还没有根节点
+                    hd = p; //p指向根节点
+                else {
+                    p.prev = tl;    //指定p的前节点是tl
+                    tl.next = p;    //指定tl的后节点是p，这两步就形成了一个双向链表
+                }
+                tl = p; //令p指向tl
+            } while ((e = e.next) != null); //这个do...while的目的是将链表的数据结构转成红黑树的TreeNode
+            if ((tab[index] = hd) != null)
+                hd.treeify(tab);
+        }
+    }
+```  
 
+**这里我们可以看到，它做的事情是将链表转换成一个双向链表，方便我们下面的操作**     
+
+***
+再下面就是红黑树的转换逻辑，我们可以看到**hd.treeify(tab)**方法，这个方法的作用是，将双向链表转换成红黑树。  
+
+``` 
+ /**
+         * Forms tree of the nodes linked from this node.
+         * @return root of tree 红黑树的转换逻辑
+         */
+        final void treeify(Node<K,V>[] tab) {
+            TreeNode<K,V> root = null;  //初始化root指针
+            for (TreeNode<K,V> x = this, next; x != null; x = next) {   //遍历循环node链表
+                next = (TreeNode<K,V>)x.next;   //找到x的next节点
+                x.left = x.right = null;
+                if (root == null) {
+                    x.parent = null;
+                    x.red = false;
+                    root = x;   //首次循环的时候，将链表的头元素设置成红黑树的root根节点
+                }
+                else {
+                    K k = x.key;    //红黑树节点的key
+                    int h = x.hash; //红黑树节点的hash
+                    Class<?> kc = null;
+                    for (TreeNode<K,V> p = root;;) {    //来个死循环，并且令p=根节点root
+                        int dir, ph;    //初始化变量
+                        K pk = p.key;
+                        if ((ph = p.hash) > h)
+                            dir = -1;   //root节点的hash 大于 红黑树节点hash，dir=-1
+                        else if (ph < h)
+                            dir = 1;     //root节点的hash 小于 红黑树节点hash，dir=1
+                        else if ((kc == null &&
+                                  (kc = comparableClassFor(k)) == null) ||
+                                 (dir = compareComparables(kc, k, pk)) == 0)    //看红黑树节点的key有没有实现compareable接口
+                            dir = tieBreakOrder(k, pk); //没有实现compareable接口进入这个逻辑，由native底层方法返回-1或者1，为了分辨节点是在root右边还是左边
+
+                        TreeNode<K,V> xp = p;   //令p = xp
+                        if ((p = (dir <= 0) ? p.left : p.right) == null) {  //dir<0，p=p.left;否则p=p.right
+                            x.parent = xp;
+                            if (dir <= 0)
+                                xp.left = x;    //小于0，x就在xp的左边
+                            else
+                                xp.right = x;   //大于0，x就在xp的右边
+                            root = balanceInsertion(root, x);   //调整红黑树的颜色
+                            break;
+                        }
+                    }
+                }
+            }
+            moveRootToFront(tab, root);
+        }
+
+```  
+
+**这里就是循环双向链表，然后用hash值进行比较，hash值比root小就在root左边，否则在右边，之后就调用的balanceInsertion(root, x)方法，这个方法的作用无非就是修复红黑树的结构，根据红黑树的特点，进行变色，左旋，右旋的操作，之后再调用moveRootToFront方法，来调整根节点**  
+
+- balanceInsertion方法
+```
+    static <K,V> TreeNode<K,V> balanceInsertion(TreeNode<K,V> root,
+                                                    TreeNode<K,V> x) {  //注意，这个方法返回的是根节点
+            x.red = true;   //新增的节点默认是红色
+            for (TreeNode<K,V> xp, xpp, xppl, xppr;;) { //初始化一些变量，xp父节点，xpp祖父节点，xppl祖父左节点 xppr祖父右节点
+                if ((xp = x.parent) == null) {  //令xp=x的父节点，假设xp为空
+                    x.red = false;  //x就是根节点，且为黑色，直接返回
+                    return x;
+                }
+                else if (!xp.red || (xpp = xp.parent) == null)
+                    return root;    //假设父节点为黑色，而且祖父节点为空的情况下，直接返回root
+                if (xp == (xppl = xpp.left)) {  //左子树的情况
+                    if ((xppr = xpp.right) != null && xppr.red) { //x节点的叔叔节点不为空且是红色的情况下，走变色的逻辑
+                        xppr.red = false;   //将叔叔节点设置成黑色
+                        xp.red = false; //将父亲节点设置成黑色
+                        xpp.red = true; //将祖父节点设置成红色
+                        x = xpp;    //将当前节点设置成祖父节点
+                    }
+                    else {
+                        if (x == xp.right) {  //x节点 的叔叔节点为空或者是黑色的情况下，走左旋的逻辑
+                            root = rotateLeft(root, x = xp);    //注意，这里的旋转节点是xp(x的父亲节点)
+                            xpp = (xp = x.parent) == null ? null : xp.parent;   //xpp = x的父亲为空？null:x父亲的父亲
+                        }
+                        //右旋的逻辑是，将父节点变成黑色，将祖父节点变成红色，以祖父节点开始旋转
+                        if (xp != null) {   //x的父亲不为空
+                            xp.red = false; //将x的父亲涂黑
+                            if (xpp != null) {  //xpp不为空的情况
+                                xpp.red = true; //将祖父xpp涂红
+                                root = rotateRight(root, xpp);  //以祖父节点开始右旋
+                            }
+                        }
+                    }
+                }
+                else {  //右子树的的情况
+                    if (xppl != null && xppl.red) {
+                        xppl.red = false;
+                        xp.red = false;
+                        xpp.red = true;
+                        x = xpp;    //这4行统一是变色的逻辑
+                    }
+                    else {
+                        if (x == xp.left) {
+                            root = rotateRight(root, x = xp);
+                            xpp = (xp = x.parent) == null ? null : xp.parent;
+                        }
+                        if (xp != null) {
+                            xp.red = false;
+                            if (xpp != null) {
+                                xpp.red = true;
+                                root = rotateLeft(root, xpp);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+```  
+
+然后底层调用了左旋和右旋的方法，所以还要看看这两个方法  
+
+- 左旋  
+```
+
+        /* ------------------------------------------------------------ */
+        // Red-black tree methods, all adapted from CLR
+
+        static <K,V> TreeNode<K,V> rotateLeft(TreeNode<K,V> root,
+                                              TreeNode<K,V> p) {    //这里需要注意的是p是新增元素的父节点，新增元素用x表示
+            TreeNode<K,V> r, pp, rl;    //r为左旋上来的节点，pp为x的祖父节点，p的父亲节点，rl为父亲节点的右子树的左子树
+            if (p != null && (r = p.right) != null) {   //假设说父节点不为空 且 父节点的右子树不为空的情况下,r=父节点的右子树
+                if ((rl = p.right = r.left) != null)   //rl=p.right=r.left的逻辑可能有点难理解，这么说把，就是下面这个情况,B代表黑色，R代表红色，
+                                                        // 12的左子树是7B，左旋后，7B变成了5R的右子树，并且把7B的parent设置成5R
+                                                    //，
+                    rl.parent = p;                  //          5 R                                     12R
+                                                    //  1 B                12R                  5R
+                                                    //                 7B      13B  ====>   1B      7B         13B
+                                                    //
+                if ((pp = r.parent = p.parent) == null)
+                    (root = r).red = false; //假设左旋后,r的父亲为空，那么证明r就是根节点，这时候将根节点设置成黑色
+                else if (pp.left == p)  //假设pp祖父节点的左子树是p的情况
+                    pp.left = r;    //r的父亲不为空的情况，将r设置成祖父的左子树（原本左子树是p，但是左旋后p下去了）
+                else
+                    pp.right = r;   //pp祖父节点的右子树是p的情况
+                r.left = p; //if..elseif..else结束后，将左旋上来的节点r的左子树设置成左旋下去的节点p
+                p.parent = r;   //左旋下去的节点p的父亲设置成r
+            }
+            return root;    //最后返回root节点
+        }
+```  
+
+- 右旋 
+```   
+        static <K,V> TreeNode<K,V> rotateRight(TreeNode<K,V> root,
+                                               TreeNode<K,V> p) {   //这里的p代表的是祖父节点
+            TreeNode<K,V> l, pp, lr;   //l是祖父节点的左子树，右旋转后上来的顶节点，如下图的12B,pp是p的父节点（可能为空）,lr是原本祖父节点p的子树的右子树（13B），
+            if (p != null && (l = p.left) != null) {
+                if ((lr = p.left = l.right) != null)    //画图说明吧。。其实道理和左旋是一样的，现在的情况就是13B，原本是l.right，现在移到19R的left去了
+                    //              19R                             12B
+                    //      12B            30B ====>        5R              19R
+                    //  5R      13B
+                    //                                                  13B
+                    //
+                    lr.parent = p;
+                if ((pp = l.parent = p.parent) == null)
+                    (root = l).red = false; //如果右旋转后，祖父节点p的父亲为空，证明订单就是l节点，那么root=l，并且设置成黑色
+                else if (pp.right == p)
+                    pp.right = l;   //p原本假设在右子树的话，那么pp的右边就设置成l点
+                else
+                    pp.left = l;    //p原本假设在左子树的话，那么pp左边就设置为l点
+                l.right = p;    //设置l的右边为p
+                p.parent = l;   //p的父亲为l
+            }
+            return root;
+        }
+
+```  
+
+左旋和右旋的话结合下我上面贴的图理解或许会更好。  
+
+
+
+- moveRootToFront方法  
+
+```
+     /**
+         * Ensures that the given root is the first node of its bin.，
+         */
+        static <K,V> void moveRootToFront(Node<K,V>[] tab, TreeNode<K,V> root) {    //把给定节点设置为桶中的第一个元素
+            int n;
+            if (root != null && tab != null && (n = tab.length) > 0) {
+                int index = (n - 1) & root.hash;
+                TreeNode<K,V> first = (TreeNode<K,V>)tab[index];
+                if (root != first) {    //如果root不是第一个节点，则将root放到第一个首节点位置
+                    Node<K,V> rn;
+                    tab[index] = root;
+                    TreeNode<K,V> rp = root.prev;
+                    if ((rn = root.next) != null)
+                        ((TreeNode<K,V>)rn).prev = rp;
+                    if (rp != null)
+                        rp.next = rn;
+                    if (first != null)
+                        first.prev = root;
+                    root.next = first;
+                    root.prev = null;
+                }   //这里面的操作就是把root放到桶的第一个元素上去
+                assert checkInvariants(root);   //这里是防御性编程，校验更改后的结构是否满足红黑树和双链表的特性.因为HashMap并没有做并发安全处理，可能在并发场景中意外破坏了结构
+            }
+        }
+```
+
+这个方法的作用主要是保证我们的根节点是在数组位桶的第一个  
+
+***
+
+自己整了一下流程图：  
+![image](https://wx1.sinaimg.cn/mw1024/007R8l8Fgy1g9krwubivnj30u025jaiw.jpg)
+
+
+***
 上述讲的是HashMap的1.8原理，下面讲以下1.7的原理吧，这里1.7没有仔细研究，就贴下上课的分析吧。。    
 
 **想请问一下，hashmap1.7的hash计算有什么问题？**  
